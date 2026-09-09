@@ -12,7 +12,7 @@ API keys required**.
 |---------|-------------|
 | 🎤 Voice | Wake-word activation → Google Web Speech API (free) → command processing |
 | ✋ Gesture | MediaPipe Hands via webcam → gesture classification → command mapping |
-| 🧠 LLM   | Unmatched voice commands → local Ollama server (e.g. Llama 3.2) |
+| 🧠 Agent | Voice commands & general queries → ultra-fast cloud Groq AI Agent (Llama 3.3 70B) with tool execution |
 | 🔇 Mute  | Global mute flag — silences all responses except the unmute toggle |
 
 ### Gesture-to-Command Table
@@ -163,17 +163,11 @@ assistant/
 
 ## FAQ
 
-**Q: Do I need an internet connection?**
-A: The voice listener uses Google's *free* Web Speech API, which requires
-internet.  Gesture recognition and Ollama run fully offline.
+**Q: Do I need an API key?**
+A: You only need a free Groq API key from [console.groq.com](https://console.groq.com/keys) added as `GROQ_API_KEY` in `.env`. Everything else (gesture tracking, voice recognition, TTS, system actions) requires zero paid keys.
 
-**Q: What if Ollama isn't running?**
-A: System commands (stop, mute, open, etc.) still work perfectly.  Only
-conversational LLM replies will fail with a friendly error message.
-
-**Q: Can I use a different LLM model?**
-A: Yes — set `OLLAMA_MODEL` in `.env` to any model you've pulled with
-`ollama pull`.
+**Q: Can I use a different model?**
+A: Yes — set `GROQ_MODEL` in `.env` to any Groq-supported model (e.g. `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`). You can also switch to local Ollama by setting `LLM_PROVIDER=ollama`.
 
 ---
 
