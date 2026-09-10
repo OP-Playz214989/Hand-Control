@@ -28,7 +28,7 @@ from mediapipe.tasks.python import vision
 
 from download_model import ensure_model
 from hand_mouse import HandMouse, HandState, _is_finger_extended
-from side_panel import SidePanel, PANEL_WIDTH
+from side_panel import SidePanel, PANEL_WIDTH, draw_rounded_rect
 
 
 # Hand landmark connections for drawing skeleton
@@ -41,14 +41,14 @@ _HAND_CONNECTIONS = [
     (0, 17),
 ]
 
-# State → display info
+# State → display info (Theme matching side_panel)
 _STATE_DISPLAY: dict[HandState, tuple[str, tuple[int, int, int]]] = {
-    HandState.IDLE:      ("IDLE",        (120, 120, 120)),
-    HandState.MOVING:    ("MOVING",  (0, 255, 100)),
-    HandState.L_CLICK:   ("LEFT CLICK",  (0, 200, 255)),
-    HandState.R_CLICK:   ("RIGHT CLICK", (255, 100, 100)),
-    HandState.SCROLLING: ("SCROLL",  (255, 200, 0)),
-    HandState.DRAGGING:  ("DRAGGING",    (200, 100, 255)),
+    HandState.IDLE:      ("STANDBY",     (130, 125, 120)),
+    HandState.MOVING:    ("TRACKING",    (100, 235, 0)),
+    HandState.L_CLICK:   ("LEFT CLICK",  (255, 210, 0)),
+    HandState.R_CLICK:   ("RIGHT CLICK", (100, 100, 255)),
+    HandState.SCROLLING: ("4-WAY SCROLL",(0, 195, 255)),
+    HandState.DRAGGING:  ("DRAGGING",    (235, 95, 195)),
 }
 
 
@@ -57,63 +57,154 @@ _WINDOW_NAME = "Mini Jarvis"
 
 # ── Drawing helpers ──────────────────────────────────────────────────
 
-def _draw_landmarks(frame, landmarks, w: int, h: int) -> None:
-    """Draw hand landmarks and bone connections on the display frame."""
+def _draw_active_zone(frame: np.ndarray, w: int, h: int) -> None:
+    """Draw high-tech HUD corner brackets marking the active screen-mapping zone."""
+    margin = 0.125  # Matches _ACTIVE_ZONE = 0.75 in hand_mouse
+    x1 = int(margin * w)
+    y1 = int(margin * h)
+    x2 = int((1.0 - margin) * w)
+    y2 = int((1.0 - margin) * h)
+
+    bracket_len = 20
+    col = (70, 60, 50)  # Subtle dark slate
+
+    # Top-Left
+    cv2.line(frame, (x1, y1), (x1 + bracket_len, y1), col, 2, cv2.LINE_AA)
+    cv2.line(frame, (x1, y1), (x1, y1 + bracket_len), col, 2, cv2.LINE_AA)
+    # Top-Right
+    cv2.line(frame, (x2, y1), (x2 - bracket_len, y1), col, 2, cv2.LINE_AA)
+    cv2.line(frame, (x2, y1), (x2, y1 + bracket_len), col, 2, cv2.LINE_AA)
+    # Bottom-Left
+    cv2.line(frame, (x1, y2), (x1 + bracket_len, y2), col, 2, cv2.LINE_AA)
+    cv2.line(frame, (x1, y2), (x1, y2 - bracket_len), col, 2, cv2.LINE_AA)
+    # Bottom-Right
+    cv2.line(frame, (x2, y2), (x2 - bracket_len, y2), col, 2, cv2.LINE_AA)
+    cv2.line(frame, (x2, y2), (x2, y2 - bracket_len), col, 2, cv2.LINE_AA)
+
+
+def _draw_landmarks(frame: np.ndarray, landmarks, w: int, h: int) -> None:
+    """Draw sleek anti-aliased hand skeleton and glowing joint nodes."""
     points = []
     for lm in landmarks:
-        # Mirror the x-coordinate since we display flipped but detect unflipped
         px, py = int((1.0 - lm.x) * w), int(lm.y * h)
         points.append((px, py))
-        cv2.circle(frame, (px, py), 5, (0, 255, 0), -1)
+
+    # Bone connections (smooth cyan-slate)
     for s, e in _HAND_CONNECTIONS:
         if s < len(points) and e < len(points):
-            cv2.line(frame, points[s], points[e], (255, 255, 255), 2)
+            cv2.line(frame, points[s], points[e], (180, 150, 60), 2, cv2.LINE_AA)
+
+    # Joint nodes
+    for idx, (px, py) in enumerate(points):
+        if idx == 8:
+            continue  # Index tip has dedicated reticle
+        cv2.circle(frame, (px, py), 4, (30, 24, 20), -1, cv2.LINE_AA)
+        cv2.circle(frame, (px, py), 3, (230, 215, 120), -1, cv2.LINE_AA)
 
 
-def _draw_fingertip_highlight(frame, landmarks, w: int, h: int) -> None:
-    """Highlight the index fingertip (cursor source) with a larger ring."""
+def _draw_fingertip_highlight(frame: np.ndarray, landmarks, w: int, h: int) -> None:
+    """Highlight the index fingertip with a precision HUD reticle."""
     tip = landmarks[8]
     px, py = int((1.0 - tip.x) * w), int(tip.y * h)
-    cv2.circle(frame, (px, py), 14, (0, 255, 255), 2)
-    cv2.circle(frame, (px, py), 3, (0, 255, 255), -1)
+
+    # Outer precision ring
+    reticle_color = (255, 215, 0)  # Bright cyan
+    cv2.circle(frame, (px, py), 13, reticle_color, 2, cv2.LINE_AA)
+
+    # Crosshair ticks (4px)
+    cv2.line(frame, (px, py - 13), (px, py - 18), reticle_color, 1, cv2.LINE_AA)
+    cv2.line(frame, (px, py + 13), (px, py + 18), reticle_color, 1, cv2.LINE_AA)
+    cv2.line(frame, (px - 13, py), (px - 18, py), reticle_color, 1, cv2.LINE_AA)
+    cv2.line(frame, (px + 13, py), (px + 18, py), reticle_color, 1, cv2.LINE_AA)
+
+    # Center dot
+    cv2.circle(frame, (px, py), 3, reticle_color, -1, cv2.LINE_AA)
 
 
-def _draw_pinch_indicator(frame, landmarks, w: int, h: int, state: HandState) -> None:
-    """Draw a line between pinching fingers when clicking/dragging."""
+def _draw_pinch_indicator(frame: np.ndarray, landmarks, w: int, h: int, state: HandState) -> None:
+    """Draw a dynamic pinch connection between fingers when clicking/dragging."""
     if state in (HandState.L_CLICK, HandState.DRAGGING):
         t = landmarks[4]   # thumb tip
         i = landmarks[8]   # index tip
         pt1 = (int((1.0 - t.x) * w), int(t.y * h))
         pt2 = (int((1.0 - i.x) * w), int(i.y * h))
-        cv2.line(frame, pt1, pt2, (0, 200, 255), 3)
+        col = (255, 210, 0) if state == HandState.L_CLICK else (235, 95, 195)
+        cv2.line(frame, pt1, pt2, col, 3, cv2.LINE_AA)
+        mid = ((pt1[0] + pt2[0]) // 2, (pt1[1] + pt2[1]) // 2)
+        cv2.circle(frame, mid, 6, col, -1, cv2.LINE_AA)
+        cv2.circle(frame, mid, 10, col, 1, cv2.LINE_AA)
     elif state == HandState.R_CLICK:
         t = landmarks[4]   # thumb tip
         m = landmarks[12]  # middle tip
         pt1 = (int((1.0 - t.x) * w), int(t.y * h))
         pt2 = (int((1.0 - m.x) * w), int(m.y * h))
-        cv2.line(frame, pt1, pt2, (255, 100, 100), 3)
+        col = (100, 100, 255)
+        cv2.line(frame, pt1, pt2, col, 3, cv2.LINE_AA)
+        mid = ((pt1[0] + pt2[0]) // 2, (pt1[1] + pt2[1]) // 2)
+        cv2.circle(frame, mid, 6, col, -1, cv2.LINE_AA)
+        cv2.circle(frame, mid, 10, col, 1, cv2.LINE_AA)
 
 
-def _draw_state_label(frame, state: HandState) -> None:
-    """Draw the current hand state as a large label on the feed."""
-    label, color = _STATE_DISPLAY.get(state, ("?", (200, 200, 200)))
-    cv2.putText(frame, label, (10, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2, cv2.LINE_AA)
-
-
-def _draw_scroll_indicator(frame, state: HandState, landmarks, w: int, h: int) -> None:
-    """Draw 4-way arrows when in scroll mode."""
+def _draw_scroll_indicator(frame: np.ndarray, state: HandState, landmarks, w: int, h: int) -> None:
+    """Draw a frosted glass 4-way compass HUD in scroll mode."""
     if state != HandState.SCROLLING:
         return
-    # Draw arrows near the middle of the hand
     cx = int((1.0 - landmarks[9].x) * w)
     cy = int(landmarks[9].y * h)
-    # Up / Down arrows
-    cv2.arrowedLine(frame, (cx, cy - 10), (cx, cy - 50), (255, 200, 0), 3, tipLength=0.4)
-    cv2.arrowedLine(frame, (cx, cy + 10), (cx, cy + 50), (255, 200, 0), 3, tipLength=0.4)
-    # Left / Right arrows
-    cv2.arrowedLine(frame, (cx - 10, cy), (cx - 50, cy), (255, 200, 0), 3, tipLength=0.4)
-    cv2.arrowedLine(frame, (cx + 10, cy), (cx + 50, cy), (255, 200, 0), 3, tipLength=0.4)
+
+    # Frosted circular background overlay
+    radius = 36
+    overlay = frame.copy()
+    cv2.circle(overlay, (cx, cy), radius, (24, 18, 15), -1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.70, frame, 0.30, 0, frame)
+
+    # Outer accent ring
+    col = (0, 195, 255)  # Electric amber
+    cv2.circle(frame, (cx, cy), radius, col, 2, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), 3, col, -1, cv2.LINE_AA)
+
+    # 4 directional chevrons
+    cv2.arrowedLine(frame, (cx, cy - 8), (cx, cy - 28), col, 2, tipLength=0.45)
+    cv2.arrowedLine(frame, (cx, cy + 8), (cx, cy + 28), col, 2, tipLength=0.45)
+    cv2.arrowedLine(frame, (cx - 8, cy), (cx - 28, cy), col, 2, tipLength=0.45)
+    cv2.arrowedLine(frame, (cx + 8, cy), (cx + 28, cy), col, 2, tipLength=0.45)
+
+
+def _draw_state_label(frame: np.ndarray, state: HandState) -> None:
+    """Draw a glassmorphic pill badge in the top-left showing current mode."""
+    label, color = _STATE_DISPLAY.get(state, ("STANDBY", (130, 125, 120)))
+
+    # Pill dimensions
+    pill_w = 145
+    pill_h = 32
+    x1, y1 = 14, 14
+    x2, y2 = x1 + pill_w, y1 + pill_h
+
+    draw_rounded_rect(frame, (x1, y1), (x2, y2), (28, 22, 19), radius=8, thickness=-1)
+    draw_rounded_rect(frame, (x1, y1), (x2, y2), color, radius=8, thickness=1)
+
+    # Glowing status dot
+    cv2.circle(frame, (x1 + 14, y1 + pill_h // 2), 5, color, -1, cv2.LINE_AA)
+    cv2.putText(frame, label, (x1 + 26, y1 + pill_h // 2 + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (250, 250, 250), 2, cv2.LINE_AA)
+
+
+def _draw_waiting_screen(frame: np.ndarray, w: int, h: int) -> None:
+    """Draw an elegant standby guide card when no hand is in view."""
+    card_w = 270
+    card_h = 56
+    x1 = (w - card_w) // 2
+    y1 = (h - card_h) // 2
+    x2 = x1 + card_w
+    y2 = y1 + card_h
+
+    draw_rounded_rect(frame, (x1, y1), (x2, y2), (28, 22, 19), radius=10, thickness=-1)
+    draw_rounded_rect(frame, (x1, y1), (x2, y2), (55, 45, 40), radius=10, thickness=1)
+
+    cv2.putText(frame, "TRACKING STANDBY", (x1 + 42, y1 + 23),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.46, (250, 250, 250), 2, cv2.LINE_AA)
+    cv2.putText(frame, "Place your hand in view to control", (x1 + 26, y1 + 43),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.32, (160, 155, 150), 1, cv2.LINE_AA)
 
 
 # ── Main listener class ─────────────────────────────────────────────
@@ -277,8 +368,11 @@ class GestureListener:
 
             hand_lm = self._select_hand(result, now)
 
+            # Draw active control zone corner brackets
+            _draw_active_zone(frame, w, h)
+
             if hand_lm is not None:
-                # Draw hand skeleton
+                # Draw sleek hand skeleton
                 _draw_landmarks(frame, hand_lm, w, h)
                 _draw_fingertip_highlight(frame, hand_lm, w, h)
 
@@ -290,27 +384,27 @@ class GestureListener:
 
                 # Draw overlays
                 _draw_pinch_indicator(frame, hand_lm, w, h, state)
-                _draw_state_label(frame, state)
                 _draw_scroll_indicator(frame, state, hand_lm, w, h)
+                _draw_state_label(frame, state)
 
                 # Click flash
                 if state == HandState.L_CLICK:
                     self._click_flash_until = now + 0.15
-                    self._click_flash_color = (0, 200, 255)
+                    self._click_flash_color = (255, 210, 0)
                 elif state == HandState.R_CLICK:
                     self._click_flash_until = now + 0.15
-                    self._click_flash_color = (255, 100, 100)
+                    self._click_flash_color = (100, 100, 255)
 
             else:
                 self._mouse.reset()
                 self._panel.update_state(HandState.IDLE, "NO HAND")
-                cv2.putText(frame, "Show your hand", (w // 2 - 100, h // 2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 100), 2, cv2.LINE_AA)
+                _draw_waiting_screen(frame, w, h)
+                _draw_state_label(frame, HandState.IDLE)
 
             # ── Click flash border ────────────────────────────────
             if now < self._click_flash_until:
                 cv2.rectangle(frame, (0, 0), (w - 1, h - 1),
-                              self._click_flash_color, 4)
+                              self._click_flash_color, 3)
 
             # ── Combine + display ─────────────────────────────────
             panel_img = self._panel.render(h, now, self._mouse)
