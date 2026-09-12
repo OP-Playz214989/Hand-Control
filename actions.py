@@ -20,6 +20,11 @@ import platform
 import subprocess
 from typing import Callable, Optional, TYPE_CHECKING
 
+try:
+    import pyautogui
+except ImportError:
+    pyautogui = None
+
 if TYPE_CHECKING:
     from tts_engine import TTSEngine
 
@@ -63,22 +68,31 @@ def _speak(tts: Optional["TTSEngine"], text: str) -> None:
 # ── Volume ────────────────────────────────────────────────────────────
 
 def volume_up(tts: Optional["TTSEngine"] = None) -> str:
-    _osascript("set volume output volume ((output volume of (get volume settings)) + 10)")
+    if platform.system() == "Darwin":
+        _osascript("set volume output volume ((output volume of (get volume settings)) + 10)")
+    elif pyautogui:
+        pyautogui.press("volumeup", presses=5)
     _speak(tts, "Volume up.")
     return "Volume increased."
 
 
 def volume_down(tts: Optional["TTSEngine"] = None) -> str:
-    _osascript("set volume output volume ((output volume of (get volume settings)) - 10)")
+    if platform.system() == "Darwin":
+        _osascript("set volume output volume ((output volume of (get volume settings)) - 10)")
+    elif pyautogui:
+        pyautogui.press("volumedown", presses=5)
     _speak(tts, "Volume down.")
     return "Volume decreased."
 
 
 def volume_mute(tts: Optional["TTSEngine"] = None) -> str:
-    _osascript(
-        "set curMute to output muted of (get volume settings)\n"
-        "set volume output muted (not curMute)"
-    )
+    if platform.system() == "Darwin":
+        _osascript(
+            "set curMute to output muted of (get volume settings)\n"
+            "set volume output muted (not curMute)"
+        )
+    elif pyautogui:
+        pyautogui.press("volumemute")
     _speak(tts, "Toggled system mute.")
     return "System mute toggled."
 
@@ -86,15 +100,17 @@ def volume_mute(tts: Optional["TTSEngine"] = None) -> str:
 # ── Brightness ────────────────────────────────────────────────────────
 
 def brightness_up(tts: Optional["TTSEngine"] = None) -> str:
-    # F2 key code = 144 (brightness up media key)
-    _key_code(144)
+    if platform.system() == "Darwin":
+        # F2 key code = 144 (brightness up media key)
+        _key_code(144)
     _speak(tts, "Brightness up.")
     return "Brightness increased."
 
 
 def brightness_down(tts: Optional["TTSEngine"] = None) -> str:
-    # F1 key code = 145 (brightness down media key)
-    _key_code(145)
+    if platform.system() == "Darwin":
+        # F1 key code = 145 (brightness down media key)
+        _key_code(145)
     _speak(tts, "Brightness down.")
     return "Brightness decreased."
 
@@ -102,21 +118,29 @@ def brightness_down(tts: Optional["TTSEngine"] = None) -> str:
 # ── Media ─────────────────────────────────────────────────────────────
 
 def media_play_pause(tts: Optional["TTSEngine"] = None) -> str:
-    # Media play/pause key code = 16 with command
-    # More reliable: use NX key simulation via osascript
-    _key_code(16, "command down")  # Cmd+P as fallback
+    if platform.system() == "Darwin":
+        # Media play/pause key code = 16 with command
+        _key_code(16, "command down")  # Cmd+P as fallback
+    elif pyautogui:
+        pyautogui.press("playpause")
     _speak(tts, "Play pause.")
     return "Media play/pause toggled."
 
 
 def media_next(tts: Optional["TTSEngine"] = None) -> str:
-    _key_code(124, "command down")  # Cmd+Right (next track in many players)
+    if platform.system() == "Darwin":
+        _key_code(124, "command down")  # Cmd+Right (next track in many players)
+    elif pyautogui:
+        pyautogui.press("nexttrack")
     _speak(tts, "Next track.")
     return "Next track."
 
 
 def media_previous(tts: Optional["TTSEngine"] = None) -> str:
-    _key_code(123, "command down")  # Cmd+Left (previous track)
+    if platform.system() == "Darwin":
+        _key_code(123, "command down")  # Cmd+Left (previous track)
+    elif pyautogui:
+        pyautogui.press("prevtrack")
     _speak(tts, "Previous track.")
     return "Previous track."
 
@@ -124,48 +148,76 @@ def media_previous(tts: Optional["TTSEngine"] = None) -> str:
 # ── Window Management ─────────────────────────────────────────────────
 
 def minimize_window(tts: Optional["TTSEngine"] = None) -> str:
-    _keystroke("m", "command down")  # Cmd+M
+    if platform.system() == "Darwin":
+        _keystroke("m", "command down")  # Cmd+M
+    elif pyautogui:
+        pyautogui.hotkey("win", "down")
     _speak(tts, "Window minimized.")
     return "Window minimized."
 
 
 def close_window(tts: Optional["TTSEngine"] = None) -> str:
-    _keystroke("w", "command down")  # Cmd+W
+    if platform.system() == "Darwin":
+        _keystroke("w", "command down")  # Cmd+W
+    elif pyautogui:
+        pyautogui.hotkey("alt", "f4")
     _speak(tts, "Window closed.")
     return "Window closed."
 
 
 def fullscreen(tts: Optional["TTSEngine"] = None) -> str:
-    # Cmd+Ctrl+F toggles macOS fullscreen
-    _keystroke("f", "{command down, control down}")
+    if platform.system() == "Darwin":
+        # Cmd+Ctrl+F toggles macOS fullscreen
+        _keystroke("f", "{command down, control down}")
+    elif pyautogui:
+        pyautogui.press("f11")
     _speak(tts, "Toggled fullscreen.")
     return "Fullscreen toggled."
 
 
-# ── System ────────────────────────────────────────────────────────────
+# ── System ────────────────────────────────────────────────────
 
 def lock_screen(tts: Optional["TTSEngine"] = None) -> str:
     _speak(tts, "Locking screen.")
-    _keystroke("q", "{command down, control down}")  # Cmd+Ctrl+Q
+    if platform.system() == "Darwin":
+        _keystroke("q", "{command down, control down}")  # Cmd+Ctrl+Q
+    elif platform.system() == "Windows":
+        try:
+            import ctypes
+            ctypes.windll.user32.LockWorkStation()
+        except Exception:
+            if pyautogui:
+                pyautogui.hotkey("win", "l")
+    elif pyautogui:
+        pyautogui.hotkey("ctrl", "alt", "l")
     return "Screen locked."
 
 
 def show_desktop(tts: Optional["TTSEngine"] = None) -> str:
-    # F11 key code = 103, or Cmd+F3 (key code 99)
-    _key_code(99, "command down")
+    if platform.system() == "Darwin":
+        # F11 key code = 103, or Cmd+F3 (key code 99)
+        _key_code(99, "command down")
+    elif pyautogui:
+        pyautogui.hotkey("win", "d")
     _speak(tts, "Showing desktop.")
     return "Show desktop."
 
 
 def mission_control(tts: Optional["TTSEngine"] = None) -> str:
-    # Control+Up (key code 126)
-    _key_code(126, "control down")
+    if platform.system() == "Darwin":
+        # Control+Up (key code 126)
+        _key_code(126, "control down")
+    elif pyautogui:
+        pyautogui.hotkey("win", "tab")
     _speak(tts, "Mission Control.")
     return "Mission Control opened."
 
 
 def spotlight(tts: Optional["TTSEngine"] = None) -> str:
-    _keystroke(" ", "command down")  # Cmd+Space
+    if platform.system() == "Darwin":
+        _keystroke(" ", "command down")  # Cmd+Space
+    elif pyautogui:
+        pyautogui.hotkey("win", "s")
     _speak(tts, "Spotlight.")
     return "Spotlight opened."
 
@@ -187,28 +239,37 @@ def screenshot_action(tts: Optional["TTSEngine"] = None) -> str:
 
 
 def notification_center(tts: Optional["TTSEngine"] = None) -> str:
-    # Click the date/time area or use a trackpad gesture isn't easy via
-    # AppleScript.  We'll use Notification Center's bundle ID.
-    _osascript(
-        'tell application "System Events" to tell process "ControlCenter"\n'
-        '  click menu bar item "Clock" of menu bar 1\n'
-        'end tell'
-    )
+    if platform.system() == "Darwin":
+        # Click the date/time area or use a trackpad gesture isn't easy via
+        # AppleScript.  We'll use Notification Center's bundle ID.
+        _osascript(
+            'tell application "System Events" to tell process "ControlCenter"\n'
+            '  click menu bar item "Clock" of menu bar 1\n'
+            'end tell'
+        )
+    elif pyautogui:
+        pyautogui.hotkey("win", "a")
     _speak(tts, "Notification Center.")
     return "Notification Center toggled."
 
 
 def scroll_up(tts: Optional["TTSEngine"] = None) -> str:
-    _osascript(
-        'tell application "System Events" to key code 126 using {option down}'
-    )  # Option+Up for page up behavior
+    if platform.system() == "Darwin":
+        _osascript(
+            'tell application "System Events" to key code 126 using {option down}'
+        )  # Option+Up for page up behavior
+    elif pyautogui:
+        pyautogui.press("pageup")
     return "Scrolled up."
 
 
 def scroll_down(tts: Optional["TTSEngine"] = None) -> str:
-    _osascript(
-        'tell application "System Events" to key code 125 using {option down}'
-    )  # Option+Down for page down behavior
+    if platform.system() == "Darwin":
+        _osascript(
+            'tell application "System Events" to key code 125 using {option down}'
+        )  # Option+Down for page down behavior
+    elif pyautogui:
+        pyautogui.press("pagedown")
     return "Scrolled down."
 
 
