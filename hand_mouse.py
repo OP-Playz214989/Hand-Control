@@ -358,9 +358,13 @@ _DRAG_HOLD_TIME     = 0.28    # seconds pinch must hold before drag starts
 
 _CLICK_COOLDOWN     = 0.22    # seconds between consecutive clicks
 
-_ATTRACT_RADIUS     = 45      # pixels — search radius for clickable elements
-_ATTRACT_STRENGTH   = 0.35    # 0–1, gentle pull strength toward element center
-_ATTRACT_INTERVAL   = 0.10    # seconds between accessibility API queries
+_ATTRACT_RADIUS     = 35      # pixels — search radius for clickable elements
+_ATTRACT_STRENGTH   = 0.28    # 0–1, base pull strength toward element center
+_ATTRACT_SNAP_PX    = 3.0     # snap-lock distance — stop jitter when nearly centered
+_ATTRACT_INTERVAL   = 0.08    # seconds between accessibility API queries
+_ATTRACT_SETTLE_VEL = 12.0    # px — cursor must be slower than this for attraction to engage
+_ATTRACT_HYST_IN    = 0.85    # radius multiplier to enter attraction (inner ring)
+_ATTRACT_HYST_OUT   = 1.4     # radius multiplier to leave attraction (outer ring)
 
 
 # ── Cursor attraction via macOS Accessibility API ────────────────────
@@ -384,8 +388,8 @@ class _CursorAttractor:
         b"AXSlider", b"AXCell", b"AXTextField", b"AXTextArea",
     })
 
-    # Probe center + four cardinal offsets
-    _PROBE_DIRS = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
+    # Probe center + four cardinal offsets (tight spacing avoids overshooting small buttons)
+    _PROBE_DIRS = [(0, 0), (-0.6, 0), (0.6, 0), (0, -0.6), (0, 0.6)]
 
     def __init__(self):
         self._available = False
@@ -393,7 +397,8 @@ class _CursorAttractor:
         self._cursor_lock = threading.Lock()
         self._cursor_pos: tuple[float, float] = (0.0, 0.0)
         # Target written by BG thread, read by main thread
-        self._target: Optional[tuple[float, float]] = None
+        # Stores (center_x, center_y, width, height) so main thread can scale strength
+        self._target: Optional[tuple[float, float, float, float]] = None
 
         if platform.system() != "Darwin":
             print("[mouse] Cursor attraction: macOS only — disabled")
@@ -501,9 +506,9 @@ class _CursorAttractor:
 
     # ── public API (called from main tracking thread) ────────────
 
-    def get_target(self, cx: float, cy: float) -> Optional[tuple[float, float]]:
+    def get_target(self, cx: float, cy: float) -> Optional[tuple[float, float, float, float]]:
         """
-        Return element center (x, y) if a clickable element is nearby.
+        Return (center_x, center_y, width, height) of a nearby clickable element.
         Non-blocking — just reads the latest result from the BG thread.
         """
         if not self._available:
@@ -516,8 +521,8 @@ class _CursorAttractor:
         # Read cached target (atomic on CPython thanks to GIL)
         target = self._target
         if target:
-            tx, ty = target
-            if math.sqrt((cx - tx) ** 2 + (cy - ty) ** 2) > _ATTRACT_RADIUS * 1.5:
+            tx, ty = target[0], target[1]
+            if math.sqrt((cx - tx) ** 2 + (cy - ty) ** 2) > _ATTRACT_RADIUS * _ATTRACT_HYST_OUT:
                 return None
         return target
 
@@ -535,17 +540,17 @@ class _CursorAttractor:
                 best_target = None
 
                 for dx, dy in self._PROBE_DIRS:
-                    px = cx + dx * _ATTRACT_RADIUS * 0.55
-                    py = cy + dy * _ATTRACT_RADIUS * 0.55
+                    px = cx + dx * _ATTRACT_RADIUS * 0.45
+                    py = cy + dy * _ATTRACT_RADIUS * 0.45
                     rect = self._query(px, py)
                     if rect is None:
                         continue
                     ex, ey, ew, eh = rect
                     ecx, ecy = ex + ew / 2.0, ey + eh / 2.0
                     dist = math.sqrt((cx - ecx) ** 2 + (cy - ecy) ** 2)
-                    if dist < _ATTRACT_RADIUS and dist < best_dist:
+                    if dist < _ATTRACT_RADIUS * _ATTRACT_HYST_IN and dist < best_dist:
                         best_dist = dist
-                        best_target = (ecx, ecy)
+                        best_target = (ecx, ecy, ew, eh)
 
                 self._target = best_target  # atomic write (GIL)
             except Exception:
@@ -680,6 +685,10 @@ class HandMouse:
         # Cursor attraction to nearby clickable elements
         self._attractor = _CursorAttractor()
         self._attracted: bool = False
+        self._attract_locked: bool = False       # hysteresis latch
+        self._smooth_attract_x: float = 0.0      # smoothed attraction target
+        self._smooth_attract_y: float = 0.0
+        self._attract_blend: float = 0.0          # 0-1 blend factor (fades in/out)
 
     def update(self, landmarks, frame_w: int, frame_h: int) -> HandState:
         """Process one frame of hand landmarks and perform mouse actions."""
@@ -755,15 +764,69 @@ class HandMouse:
         sy = self._sy
 
         # ── Attract cursor toward nearby clickable UI elements ───
+        # Uses: hysteresis, velocity gating, size-adaptive strength,
+        #       smoothed target, snap-lock, and EMA writeback to prevent
+        #       the oscillation/flickering that plagued small buttons.
         self._attracted = False
-        if not self._dragging and effective_dist < 15.0:
+        _attract_target = None
+        if not self._dragging:
             _attract_target = self._attractor.get_target(sx, sy)
-            if _attract_target is not None:
-                _tx, _ty = _attract_target
-                # Gently bias output without corrupting internal filter state
-                sx += _ATTRACT_STRENGTH * (_tx - sx)
-                sy += _ATTRACT_STRENGTH * (_ty - sy)
+
+        if _attract_target is not None:
+            _tx, _ty, _tw, _th = _attract_target
+            cursor_to_target = math.hypot(sx - _tx, sy - _ty)
+
+            # Hysteresis: once locked, stay locked until cursor exits the outer ring
+            if self._attract_locked:
+                if cursor_to_target > _ATTRACT_RADIUS * _ATTRACT_HYST_OUT:
+                    self._attract_locked = False
+            else:
+                if cursor_to_target < _ATTRACT_RADIUS * _ATTRACT_HYST_IN and effective_dist < _ATTRACT_SETTLE_VEL:
+                    self._attract_locked = True
+
+            if self._attract_locked:
+                # Smooth the attraction target itself to prevent frame-to-frame jitter
+                _at_alpha = 0.35
+                if self._attract_blend < 0.01:  # first engagement — snap
+                    self._smooth_attract_x = _tx
+                    self._smooth_attract_y = _ty
+                else:
+                    self._smooth_attract_x += _at_alpha * (_tx - self._smooth_attract_x)
+                    self._smooth_attract_y += _at_alpha * (_ty - self._smooth_attract_y)
+
+                # Fade attraction in over ~5 frames so it doesn't pop
+                self._attract_blend = min(1.0, self._attract_blend + 0.22)
+
+                # Scale strength inversely with element size:
+                # Large buttons (>60px) → full strength; tiny (≤16px) → reduced
+                elem_size = max(_tw, _th)
+                size_scale = min(1.0, max(0.4, elem_size / 50.0))
+                strength = _ATTRACT_STRENGTH * size_scale * self._attract_blend
+
+                # Snap-lock: if we're already nearly on center, lock perfectly
+                dist_to_smooth = math.hypot(sx - self._smooth_attract_x, sy - self._smooth_attract_y)
+                if dist_to_smooth < _ATTRACT_SNAP_PX:
+                    sx = self._smooth_attract_x
+                    sy = self._smooth_attract_y
+                else:
+                    sx += strength * (self._smooth_attract_x - sx)
+                    sy += strength * (self._smooth_attract_y - sy)
+
+                # CRITICAL: Write attracted position back to the internal EMA state
+                # so next frame's filter starts from the attracted position rather
+                # than the un-attracted raw position. This prevents the oscillation
+                # that caused flickering.
+                self._sx = sx
+                self._sy = sy
+
                 self._attracted = True
+            else:
+                # Not locked — decay blend smoothly
+                self._attract_blend *= 0.7
+        else:
+            # No target found — release lock and decay smoothly
+            self._attract_locked = False
+            self._attract_blend *= 0.7
 
         self.cursor_screen = (int(sx), int(sy))
 

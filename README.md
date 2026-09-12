@@ -107,6 +107,12 @@ cp .env.example .env
 
 ## Running
 
+### ⚡ Option 1: 1-Click Launch (macOS)
+- **Desktop Shortcut**: Double-click the **Mini Jarvis** icon on your Desktop.
+- **In Finder**: Double-click `Mini Jarvis.app` or `start.command` in the project folder.
+- **Add to Dock**: Drag `Mini Jarvis.app` to your macOS Dock for permanent 1-click access!
+
+### 💻 Option 2: Terminal
 ```bash
 python main.py
 ```
